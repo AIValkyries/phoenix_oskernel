@@ -1,0 +1,174 @@
+     1                                  ; 被 BIOS 读入到内存绝对地址  0x7C00 (31 KB) 处
+     2                                  ; 读取内核
+     3                                  
+     4                                  
+     5                                  BOOTSEG   equ 0x7c0
+     6                                  INITSEG   equ 0x5000           ; 将自己移动到 0x50000 (512 kib) 处
+     7                                  SYSTEMSEG equ 0x00000000        ; 加载到 [addr = 0] 处
+     8                                  CORE_TOTAL_NSEC equ 118
+     9                                  
+    10                                  CORE_START_SECTOR equ 0x00000001
+    11                                  
+    12                                  start:
+    13 00000000 FA                          cli
+    14 00000001 B80300                      mov ax, 3
+    15 00000004 CD10                        int 0x10
+    16                                  
+    17 00000006 B80050                      mov ax, INITSEG
+    18 00000009 8ED0                        mov ss, ax
+    19 0000000B BCFFFF                      mov sp, 0xffff
+    20                                  
+    21                                      ; 将自己 copy 到 0x50000 (320kib)处
+    22 0000000E B8C007                      mov ax, BOOTSEG
+    23 00000011 8ED8                        mov ds, ax
+    24 00000013 B80050                      mov ax, INITSEG
+    25 00000016 8EC0                        mov es, ax
+    26 00000018 29F6                        sub si,si
+    27 0000001A 29FF                        sub di,di
+    28 0000001C B90001                      mov cx, 256
+    29 0000001F F3                          rep 
+    30 00000020 A5                          movsw
+    31                                      
+    32 00000021 66EA[29000000]0050          jmp dword INITSEG:go               
+    33                                  
+    34                                  ; 加载 system 模块,处于 0x50000 处
+    35                                  go:
+    36                                      ; 提示信息
+    37 00000029 BE[FF00]                    mov si, loading_sys_msg
+    38 0000002C E8A400                      call print
+    39                                  
+    40 0000002F 66B976000000                mov ecx, CORE_TOTAL_NSEC      ; 总磁盘数量 = 127
+    41 00000035 6631D2                      xor edx, edx
+    42 00000038 8EDA                        mov ds,  edx
+    43                                      
+    44                                      ; 加载内核代码
+    45                                      ; mov ecx, eax
+    46 0000003A 66B801000000                mov eax, CORE_START_SECTOR  ; 起始扇区号
+    47 00000040 66BB00000000                mov ebx, SYSTEMSEG          ; 内核起始位置
+    48                                      .b1:
+    49 00000046 E81D00                          call load_system
+    50 00000049 6640                            inc  eax
+    51 0000004B E2F9                            loop .b1
+    52                                      
+    53                                      ; 将自己 data(e000-1000=0xd000) copy to 0x11000 处
+    54                                      ; data 位于 0x11000 物理地址处
+    55 0000004D B8000E                      mov ax, 0xe00
+    56 00000050 8ED8                        mov ds, ax
+    57 00000052 B80011                      mov ax, 0x1100
+    58 00000055 8EC0                        mov es, ax
+    59 00000057 29F6                        sub si,si
+    60 00000059 29FF                        sub di,di
+    61 0000005B B90008                      mov cx, 2048
+    62 0000005E F3                          rep 
+    63 0000005F A5                          movsw
+    64                                  
+    65 00000060 66E94A000000                jmp dword ok_load_system
+    66                                  
+    67                                  ; 加载内核代码,eax=逻辑扇区号
+    68                                  load_system:
+    69 00000066 6650                        push eax 
+    70 00000068 6651                        push ecx
+    71 0000006A 6652                        push edx
+    72                                  
+    73 0000006C 6650                        push eax    ; 存储了逻辑扇区号
+    74                                  
+    75                                      ; 写入扇区数, 逻辑扇区号
+    76 0000006E BAF201                      mov dx, 0x1f2
+    77 00000071 B001                        mov al, 1
+    78 00000073 EE                          out dx, al
+    79                                  
+    80                                      ; 起始扇区号 = 0x1f3
+    81 00000074 42                          inc dx
+    82 00000075 6658                        pop eax
+    83 00000077 EE                          out dx,al
+    84                                  
+    85 00000078 42                          inc dx
+    86 00000079 B108                        mov cl,8
+    87 0000007B 66D3E8                      shr eax,cl
+    88 0000007E EE                          out dx,al                          ;LBA地址15~8
+    89                                  
+    90 0000007F 42                          inc dx                             ;0x1f5
+    91 00000080 66D3E8                      shr eax,cl
+    92 00000083 EE                          out dx,al                          ;LBA地址23~16
+    93                                  
+    94 00000084 42                          inc dx                             ;0x1f6
+    95 00000085 66D3E8                      shr eax,cl
+    96 00000088 0CE0                        or al,0xe0                         ;第一硬盘  LBA地址27~24
+    97 0000008A EE                          out dx,al
+    98                                  
+    99 0000008B 42                          inc dx                             ;0x1f7
+   100 0000008C B020                        mov al,0x20                        ;读命令
+   101 0000008E EE                          out dx,al
+   102                                  
+   103                                      .waits:
+   104 0000008F EC                              in al,dx
+   105 00000090 2488                            and al,0x88
+   106 00000092 3C08                            cmp al,0x08
+   107 00000094 75F9                            jnz .waits                       ; 不忙，且硬盘已准备好数据传输 
+   108                                  
+   109 00000096 66B900010000                    mov ecx,256                      ; 总共要读取的字数
+   110 0000009C BAF001                          mov dx,0x1f0                     ; 数据端口
+   111                                      .readw:
+   112 0000009F ED                              in ax,dx
+   113 000000A0 678903                          mov [ebx],ax
+   114 000000A3 6683C302                        add ebx,2
+   115 000000A7 E2F6                            loop .readw
+   116                                  
+   117 000000A9 665A                        pop edx
+   118 000000AB 6659                        pop ecx
+   119 000000AD 6658                        pop eax
+   120                                        
+   121 000000AF C3                          ret
+   122                                  
+   123                                  
+   124                                  ok_load_system:
+   125 000000B0 B80050                      mov ax, INITSEG
+   126 000000B3 8ED8                        mov ds, ax
+   127 000000B5 3E0F0116[F900]              lgdt [ds:pgdt]
+   128                                  
+   129 000000BB E492                        in al, 0x92                         ;南桥芯片内的端口 
+   130 000000BD 0C02                        or al, 0000_0010B
+   131 000000BF E692                        out 0x92, al                        ;打开A20
+   132                                  
+   133 000000C1 0F20C0                      mov eax, cr0                  
+   134 000000C4 6683C801                    or  eax, 1
+   135 000000C8 0F22C0                      mov cr0, eax                        ;设置PE位
+   136                                  
+   137                                      ;hlt
+   138                                      ;infi: jmp near infi 
+   139 000000CB 66EA0C6400000800            jmp dword 0x0008:0x640c             ; head 代码开始的地方
+   140                                  
+   141                                  print:
+   142 000000D3 B40E                        mov ah, 0x0e
+   143                                  .next:
+   144 000000D5 8A04                        mov al, [si]
+   145 000000D7 3C00                        cmp al, 0
+   146 000000D9 7405                        jz .done
+   147 000000DB CD10                        int 0x10
+   148 000000DD 46                          inc si
+   149 000000DE EBF5                        jmp .next
+   150                                  .done:
+   151 000000E0 C3                          ret
+   152                                  
+   153 000000E1 0000000000000000        gdt  dq  0x0000000000000000     ; 8 个字节  
+   154 000000E9 FF0F0000009ACF00             dq  0x00cf9a0000000fff     ; 内核代码段
+   155 000000F1 FF0F00000092CF00             dq  0x00cf920000000fff     ; 内核数据段
+   156                                       ;dq  0x00cb9a000000ffff     ; 用户代码?    0x18 f
+   157                                       ;dq  0x00cb92000000ffff     ; 用户数据?    0x20 f
+   158                                  
+   159 000000F9 0008                    pgdt dw 0x800       ; 限长 
+   160 000000FB [E1000500]                   dd 0x50000+gdt   ; 全局符号表的地址  
+   161                                  
+   162                                  
+   163 000000FF 6C6F6164696E672073-     loading_sys_msg db 'loading system start....',10, 13, 0; \n\r
+   163 00000108 797374656D20737461-
+   163 00000111 72742E2E2E2E0A0D00 
+   164                                  ; prepare entry protection mode....
+   165 0000011A 707265706172652065-     protection_mode db 'prepare entry protection mode....',10, 13, 0; \n\r
+   165 00000123 6E7472792070726F74-
+   165 0000012C 656374696F6E206D6F-
+   165 00000135 64652E2E2E2E0A0D00 
+   166                                  end:
+   167                                  
+   168 0000013E 00<rep C0h>             times 510-($-$$) db 0
+   169 000001FE 55AA                          db 0x55,0xaa
